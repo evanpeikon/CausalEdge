@@ -1,4 +1,4 @@
-# Abstract 
+## Abstract 
 Network inference from time-series proteomics data remains a challenge in systems biology, with most approaches unable to distinguish direct regulatory relationships from indirect associations mediated by intermediate proteins. CausalEdge addresses this challenge by combining Granger Causality testing with bootstrapped mediation analysis to construct directed causal networks representing direct regulatory relationships. This model operates though a four-stage pipeline: 
 - First, CausalEdge performs initial filtering to find protein pairs that vary together, which narrows down candidate pairs for testing.
 - Second, it performs Granger Causality tests for each candidate pair to determine if past values of Protein $A$ help predict future values of Protein $B$ better than Protein $B$'s history alone, establishing temporal precedence with false discovery rate correction.
@@ -7,15 +7,15 @@ Network inference from time-series proteomics data remains a challenge in system
 
 By quantifying the proportion of causal effect mediatd using bootstrap confidence intervals, CausalEdge provides statistically rigorous identification of spurious edges, yielding clearner, high confidence, networks that more accurately reflect direct regulatory relationships. This model is applicable to time-series proteomics data from from traditional high-throughput platforms and emerging wearable molecular biosensors, enabling more interpretable systems-level analysis of protein regulatory dynamics. An important application of CausalEdge is generating condition-specific or subject-specific causal relationship data that can be integrated into biological knowledge graphs. This capability helps address the challenge of [molecular moonlighting](https://sequenceanddestroy.substack.com/p/molecular-moonlighting), where a given protein's function depends on context, by explicitly capturing how protein regulatory roles vary across different biological states.
 
-# I. Introduction 
-## 1.1 The Challenge of Network Inference in Proteomics
+## I. Introduction 
+### 1.1 The Challenge of Network Inference in Proteomics
 Understanding causal and regulatory relationships among proteins is fundamental to systems biology, with applications ranging from disease mechanism elucidation to therapeutic target identification. While high-throughput proteomics technologies have enabled comprehensive measurement of protein abundance across conditions and time points, inferring the underlying regulatory network structure remains challenging. Traditional approaches based on correlation or differential expression analysis can identify co-varying proteins but cannot establish distinguish direct regulatory relationships from indirect associations [1,2].
 
 The distinction between direct and indirect relationships has important implications for biological interpretation. Consider a scenario where protein A regulates protein B, and protein B in turn regulates protein C (A→B→C). Standard network inference methods would typically report edges for A→B, B→C, and A→C. However, the A→C relationship is indirect, mediated entirely through B. Including such indirect edges in network representations obscures the true regulatory architecture, complicates hub identification, and can mislead downstream pathway analysis and therapeutic targeting efforts [3,4].
 
 A related challenge in proteomics is molecular moonlighting; the phenomenon where individual proteins perform different functions depending on cellular context, localization, post-translational modifications, or disease state [24,25]. Static protein interaction databases cannot capture this context-dependence, making it difficult to understand what a specific protein is actually doing in a particular biological condition. Condition-specific causal networks that explicitly represent how protein regulatory relationships vary across contexts provide a solution to this problem, enabling more accurate functional annotation and better integration with biological knowledge graphs.
 
-## 1.2 Limitations of Existing Approaches 
+### 1.2 Limitations of Existing Approaches 
 The landscape of network inference methods reveals a persistent gap between what we can measure and what we need to understand. Static correlation-based methods, including partial correlation networks and Gaussian graphical models, excel at identifying conditional independence relationships but lack the temporal information necessary to infer directionality [5,6]. Without knowing which protein's change precedes the other, these methods cannot distinguish regulatory drivers from their downstream targets, nor can they identify mediated relationships that require temporal ordering to detect.
 
 Differential network analysis approaches have emerged to compare networks across conditions, offering insights into context-specific associations [7]. However, these methods inherit the same causal inference limitations as their static counterparts. While they can identify which associations differ between conditions, they cannot determine whether observed changes represent direct regulatory mechanisms or merely downstream consequences of upstream perturbations. This ambiguity becomes particularly problematic when attempting to identify therapeutic targets, where distinguishing between drivers and passengers is critical.
@@ -26,7 +26,7 @@ Information-theoretic methods, such as mutual information and transfer entropy, 
 
 Granger causality, originally developed in econometrics and now widely used in neuroscience, offers a complementary approach based on temporal precedence and predictive power [13,14]. The core idea is as follows: if past values of variable X improve prediction of variable Y beyond what Y's own history provides, then X can be said to "Granger-cause" Y. This operational definition of causality aligns well with regulatory biology, where upstream proteins influence the abundance or activity of downstream targets over time. Despite these advantages, applications of Granger causality to proteomics have been limited [15,16], and existing implementations have not addressed the fundamental problem of indirect relationships. When protein A regulates B, and B regulates C, standard Granger causality will detect both the direct relationships (A→B, B→C) and the indirect relationship (A→C), leaving researchers with cluttered networks that obscure the true regulatory architecture.
 
-## 1.3 Novel Contributions 
+### 1.3 Novel Contributions 
 The persistent challenge of distinguishing direct from indirect relationships in protein regulatory networks motivated the development of CausalEdge, a framework that integrates Granger causality testing with bootstrapped mediation analysis to systematically identify and remove spurious edges. This integration addresses a critical gap: while Granger causality establishes temporal precedence and predictive relationships, it does not inherently distinguish whether A→C represents a direct regulatory mechanism or an indirect effect mediated through intermediate proteins. By explicitly testing for mediation and quantifying the proportion of each relationship that operates through intermediates, CausalEdge enables data-driven decisions about which edges represent direct regulatory mechanisms.
 
 The framework makes several advances beyond existing approaches. Rather than relying on arbitrary topology-based heuristics to prune networks (such as removing edges below a certain correlation threshold or keeping only the top-k strongest relationships), CausalEdge employs statistical hypothesis testing at every stage. Initial Granger causality tests are corrected for multiple comparisons using false discovery rate control, ensuring that the expected proportion of false positives is kept below a specified threshold [19]. Subsequently, for each edge that passes this initial filter, bootstrapped mediation analysis quantifies what proportion of the relationship operates through measured intermediate proteins, complete with confidence intervals that account for the uncertainty in these estimates [22,23]. Edges are pruned only when a substantial and statistically significant proportion of the effect is mediated, with the threshold under user control to match the stringency requirements of different applications.
@@ -35,9 +35,27 @@ Additionally, by applying CausalEdge separately to time-series data from differe
 
 The resulting networks more accurately represent direct regulatory mechanisms, enabling improved identification of regulatory hubs—proteins that directly control many downstream targets—and regulated integration points where multiple pathways converge. By removing transitive edges that pass through intermediate proteins, network centrality measures and other topological metrics more faithfully reflect the underlying regulatory architecture rather than being inflated by indirect effects. For systems biology applications ranging from disease mechanism elucidation to therapeutic target identification, this distinction between direct and indirect relationships is not just academically interesting but practically essential. Targeting a protein with many direct regulatory connections is fundamentally different from targeting one whose apparent centrality derives primarily from being downstream of a long cascade.
 
-# II. Methods
-## 2.1 Mathematical Framework
+## II. Methods
+### 2.1 Mathematical Framework
 The CausalEdge framework rests on two complementary statistical approaches: Granger causality for establishing temporal precedence and directional influence, and mediation analysis for distinguishing direct effects from those that operate through intermediate variables. Together, these methods enable inference of regulatory network structure from time-series proteomics data.
 
-### 2.1.1 Granger Causality Testing
-The fundamental question in causal inference is whether one variable influences another. For protein time series, this translates to asking whether changes in protein A precede and help predict changes in protein B. Granger causality formalizes this intuition through a comparison of predictive models. Given time series $x_t$ and $y_t$ measured at time points $t=1,2,...T,$ we test  whether past values of $x$ improve prediciton of current values of $y$ beyond what $y$'s own history provides. 
+#### 2.1.1 Granger Causality Testing
+The fundamental question in causal inference is whether one variable influences another. For protein time series, this translates to asking whether changes in protein A precede and help predict changes in protein B. Granger causality formalizes this intuition through a comparison of predictive models. Given time series $x_t$ and $y_t$ measured at time points $t=1,2,...T,$ we test  whether past values of $x$ improve prediciton of current values of $y$ beyond what $y$'s own history provides. This test proceeds by fitting two autoregressive models. The restricted model uses only the history of $y$ to predict it's current value:
+
+$y_t = α_0 + \sum_{i=1}^p α_iy_{t-i}+ϵ_t$
+
+The unrestricted model adds the history of $x$ as additional predictors:
+
+ $y_t = α_0 + \sum_{i=1}^p α_iy_{t-i} + \sum_{i=1}^p β_ix_{t-i}+η_t$
+
+where $p$ is the maximum lag order tested and $ϵ_t$ and $η_t$ are residual error terms. The null hypothesis that $x$ does not Granger-cause $y$ corresponds to $H_0: β_1 = β_2 = ...= β_p=0$, which is tested via an F-statistic that compares the residual variance of the two models:
+
+$F = \frac{(RSS_r-RSS_u)/p}{RSS_u/(T-2p-1)}$
+
+where $RSS_r$ and $RSS_u$ are the residual sums of squares for the restricted and unrestricted models, respectively. Under the null hypothesis, this statistic follows an F-distribution with degrees of freedom $(p,T-2p-1)$. A large F-statistic indicates that including $x$'s history substantially improves the prediction of $y$, suggesting a causal relationship. 
+
+The choice of lag order $p$ is critical, as it determines how far back in time we look for predictive relationships. Too small a lag may miss regulatory effects that operate over longer timescales, while too large a lag reduces statistical power and may introduce spurious relationships. In practice, CausalEdge tests multiple lags $p[1,2,...,p_{max}]$ and selects the optimal lag, $p^*$, which is the one that yields the highest F-statistic, represetning the timescale at which the regulatory effect is strongest. This data-driven approach allows the temporal dynamics of each protein pair to emerge from the data rather than being imposed a priori.
+
+Finally, we declare that protein X Granger-causes protein Y if the F-statistic exceeds a threshold and the associated p-value is below a significance level after correction for multiple testing (described in Section 2.1.2), establishing both temporal precedence (X's past predicts Y's future) and predictive power (the prediction is statistically significant), providing a foundation for inferring directional regulatory relationships.
+
+#### 2.1.2 False Discovery Rate Correction
