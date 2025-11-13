@@ -1,3 +1,5 @@
+# CausalEdge: A Granger Causality and Mediation Framework for Inferring Direct Causal Networks in Time-Series Proteomics 
+
 ## Abstract 
 Network inference from time-series proteomics data remains a challenge in systems biology, with most approaches unable to distinguish direct regulatory relationships from indirect associations mediated by intermediate proteins. CausalEdge addresses this challenge by combining Granger Causality testing with bootstrapped mediation analysis to construct directed causal networks representing direct regulatory relationships. This model operates though a four-stage pipeline: 
 - First, CausalEdge performs initial filtering to find protein pairs that vary together, which narrows down candidate pairs for testing.
