@@ -59,3 +59,40 @@ The choice of lag order $p$ is critical, as it determines how far back in time w
 Finally, we declare that protein X Granger-causes protein Y if the F-statistic exceeds a threshold and the associated p-value is below a significance level after correction for multiple testing (described in Section 2.1.2), establishing both temporal precedence (X's past predicts Y's future) and predictive power (the prediction is statistically significant), providing a foundation for inferring directional regulatory relationships.
 
 #### 2.1.2 False Discovery Rate Correction
+Proteomics experiments typically measure hundreds to thousands of proteins, leading to tens of thousands or even millions of potential protein pairs to test. With a standard significance threshold of $p < 0.05$, we would expect 5% of tests to yield false positives purely by chance; a problem that compounds dramatically with the number of tests performed. Without correction, networks inferred from proteomics data would be heavily contaminated with spurious edges.
+
+To address this challenge, the Benjamini-Hochberg procedure for controlling the false discovery rate (FDR) is employed. Unlike family-wise error rate corrections such as Bonferroni, which control the probability of making any false positives, FDR correction controls the expected proportion of false positives among all rejected hypotheses. This distinction provides substantially greater statistical power while still ensuring that the majority of reported relationships are true positives.
+
+Given $N$ candidate protein pairs tested for Granger causality, we obtain p-values $p_1, p_2 ,...,p_N$.  The Benjamini-Hochberg procedure operates as follows:
+- First, sort the p-values in ascending order $p_{(1)}≤p_{(2)}≤...≤p_{(n)$.
+- Second, find the largest index $k$ such thagt $p_{(k)} ≤\frac{k}{N}*α$, where $α$ is the desired FDR level (0.05 by default).
+- Third, reject all null hypotheses corresponding to tests $1,2,...k$, ensuring that the  expected proportion of false positives among all rejected hypotheses is at most $α$, providing formal control over the false discovery rate while maintaining reasonable power to detect true relationships.
+
+The importance of this correction cannot be overstated. In preliminary analyses without FDR correction, networks inferred from time-series proteomics data contained 2-10x as many edges as networks inferred with proper correction, with the additional edges showing substantially weaker effect sizes and less biological coherence. By applying FDR correction, we ensure that the networks entering the mediation analysis stage represent genuine temporal relationships rather than statistical noise.
+
+#### 2.1.3 Mediation Analysis
+Establishing that protein A Granger-causes protein C tells us that A's past helps predict C's future, but it does not tell us whether this effect is direct or mediated through intermediate proteins. This distinction is important for understanding regulatory architecture. Consider a pathway where A regulates B, and B in turn regulates C. Standard Granger causality will detect A→C (since A's past predicts C's future), but this edge is spurious in the sense that A affects C only indirectly through B. Including such indirect edges obscures the true regulatory structure and inflates centrality metrics for upstream proteins.
+
+To address this, causal mediation analuysis is performed, which decomposes the total effect of A on C into direct and indirect components [20,21]. The total effect, denoted c
+c, represents the overall influence of A on C. This can be partitioned into a direct effect $c^'$ (the influence of A on C that does not pass through any measured mediatior B) and an indirect effect $ab$ (the influence that operates through B). The indirect effect is itself a product of two paths: the effect of A on B (the "a-path") and the effect of B on C controlling for A (the "b-path"). These quantities are related by the mediation equation: 
+
+$c=c^'+ab$
+
+The proportion of the total effect that is mediated through B is:
+
+$ρ = \frac{ab}{c}$
+
+This proportion serves as our key decision variable: if a large fraction of A's effect on C operates through B, then the A→C edge should be considered indirect and removed from the network. To estimate these quantities from time-series data, three regression models are fit for each potential mediation triple (A, B, C). The first model estimates the a-path by regressing B on A and lagged values of B:
+
+$B_t = γ_0 + \sum_{i=1}^p γ_iB_{t-i} + \sum_{i=1}^p a_iA_{t-i} + ϵ_{t}^{(1)}$
+
+The second model estimates both the b-path and the direct effect (c'-path) by regressing C on both A and B, along with lagged values of C:
+
+$C_t = δ_0 + \sum_{i=1}^p δ_iC_{t-i} + \sum_{i=1}^p c_{i}^' A_{t-i} + \sum_{i=1}^p b_iB_{t-i} +  ϵ_{t}^{(2)}$
+
+The third model estimates the total effect (c-path) by regressing C on A alone:
+
+$C_t = θ_0 \sum_{i=1}^p θ_iC_{t-i} + \sum_{i=1}^p c_iA_{t-i} +  ϵ_{t}^{(3)}$
+
+Each path is then estiamted as the mean effect across lags $a=\frac{1}{p}\sigma_{i=1}^p a_i$, $b=\frac{1}{p}\sigma_{i=1}^p b_i$, and similarly for $c$ and $c^'$.  This averaging accounts for the fact that regulatory effects may be distributed across multiple time lags rather than concentrated at a single lag. The key quantity for determining whether an edge should be pruned is the indirect effect $ab$. However, because this is a product of two estimated coefficients, its sampling distribution is complex and typically non-normal, making standard error propagation unreliable. To obtain valid statistical inference, CasualEdge utilizes bootstrapping. 
+
