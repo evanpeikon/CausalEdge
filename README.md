@@ -64,7 +64,7 @@ Proteomics experiments typically measure hundreds to thousands of proteins, lead
 To address this challenge, the Benjamini-Hochberg procedure for controlling the false discovery rate (FDR) is employed. Unlike family-wise error rate corrections such as Bonferroni, which control the probability of making any false positives, FDR correction controls the expected proportion of false positives among all rejected hypotheses. This distinction provides substantially greater statistical power while still ensuring that the majority of reported relationships are true positives.
 
 Given $N$ candidate protein pairs tested for Granger causality, we obtain p-values $p_1, p_2 ,...,p_N$.  The Benjamini-Hochberg procedure operates as follows:
-- First, sort the p-values in ascending order $p_{(1)}≤p_{(2)}≤...≤p_{(n)$.
+- First, sort the p-values in ascending order $p_{(1)}≤p_{(2)}≤...≤p_{(n)}$.
 - Second, find the largest index $k$ such thagt $p_{(k)} ≤\frac{k}{N}*α$, where $α$ is the desired FDR level (0.05 by default).
 - Third, reject all null hypotheses corresponding to tests $1,2,...k$, ensuring that the  expected proportion of false positives among all rejected hypotheses is at most $α$, providing formal control over the false discovery rate while maintaining reasonable power to detect true relationships.
 
@@ -74,9 +74,9 @@ The importance of this correction cannot be overstated. In preliminary analyses 
 Establishing that protein A Granger-causes protein C tells us that A's past helps predict C's future, but it does not tell us whether this effect is direct or mediated through intermediate proteins. This distinction is important for understanding regulatory architecture. Consider a pathway where A regulates B, and B in turn regulates C. Standard Granger causality will detect A→C (since A's past predicts C's future), but this edge is spurious in the sense that A affects C only indirectly through B. Including such indirect edges obscures the true regulatory structure and inflates centrality metrics for upstream proteins.
 
 To address this, causal mediation analuysis is performed, which decomposes the total effect of A on C into direct and indirect components [20,21]. The total effect, denoted c
-c, represents the overall influence of A on C. This can be partitioned into a direct effect $c^'$ (the influence of A on C that does not pass through any measured mediatior B) and an indirect effect $ab$ (the influence that operates through B). The indirect effect is itself a product of two paths: the effect of A on B (the "a-path") and the effect of B on C controlling for A (the "b-path"). These quantities are related by the mediation equation: 
+c, represents the overall influence of A on C. This can be partitioned into a direct effect $c^{'}$ (the influence of A on C that does not pass through any measured mediatior B) and an indirect effect $ab$ (the influence that operates through B). The indirect effect is itself a product of two paths: the effect of A on B (the "a-path") and the effect of B on C controlling for A (the "b-path"). These quantities are related by the mediation equation: 
 
-$c=c^'+ab$
+$c=c^{'}+ab$
 
 The proportion of the total effect that is mediated through B is:
 
@@ -88,11 +88,44 @@ $B_t = γ_0 + \sum_{i=1}^p γ_iB_{t-i} + \sum_{i=1}^p a_iA_{t-i} + ϵ_{t}^{(1)}$
 
 The second model estimates both the b-path and the direct effect (c'-path) by regressing C on both A and B, along with lagged values of C:
 
-$C_t = δ_0 + \sum_{i=1}^p δ_iC_{t-i} + \sum_{i=1}^p c_{i}^' A_{t-i} + \sum_{i=1}^p b_iB_{t-i} +  ϵ_{t}^{(2)}$
+$C_t = δ_0 + \sum_{i=1}^p δ_iC_{t-i} + \sum_{i=1}^p c_{i}^{'} A_{t-i} + \sum_{i=1}^p b_iB_{t-i} +  ϵ_{t}^{(2)}$
 
 The third model estimates the total effect (c-path) by regressing C on A alone:
 
 $C_t = θ_0 \sum_{i=1}^p θ_iC_{t-i} + \sum_{i=1}^p c_iA_{t-i} +  ϵ_{t}^{(3)}$
 
-Each path is then estiamted as the mean effect across lags $a=\frac{1}{p}\sigma_{i=1}^p a_i$, $b=\frac{1}{p}\sigma_{i=1}^p b_i$, and similarly for $c$ and $c^'$.  This averaging accounts for the fact that regulatory effects may be distributed across multiple time lags rather than concentrated at a single lag. The key quantity for determining whether an edge should be pruned is the indirect effect $ab$. However, because this is a product of two estimated coefficients, its sampling distribution is complex and typically non-normal, making standard error propagation unreliable. To obtain valid statistical inference, CasualEdge utilizes bootstrapping. 
+Each path is then estiamted as the mean effect across lags $a=\frac{1}{p}\sigma_{i=1}^p a_i$, $b=\frac{1}{p}\sigma_{i=1}^p b_i$, and similarly for $c$ and $c^{'}$.  This averaging accounts for the fact that regulatory effects may be distributed across multiple time lags rather than concentrated at a single lag. The key quantity for determining whether an edge should be pruned is the indirect effect $ab$. However, because this is a product of two estimated coefficients, its sampling distribution is complex and typically non-normal, making standard error propagation unreliable. To obtain valid statistical inference, CasualEdge utilizes bootstrapping. 
 
+#### 2.1.4 Bootstrap Confidence Intervals
+Bootstrapping provides a nonparametric approach to quantifying uncertainty in complex statistics like the indirect effect [22,23]. The basic idea is to resample the data many times, recompute the statistic of interest for each resample, and use the resulting distribution to construct confidence intervals. For mediation analysis, this approach has been shown to provide better coverage properties than normal-theory methods, particularly for the indirect effect which follows a skewed distribution [23].
+
+For each mediation test, the bootstrap procedure proceeds as follows. First, the time-series is sampled with replacement $B$ times (default $B$=1000), preserving the temporal structure by sampling entire time points together. For each bootstrap sample $b=1,2,...,B,$ CausalEdge fits Models 1 and 2 from Section 2.1.3 to obtain estimates $\hat{a}^{(b)}$ and  $\hat{b}^{(b)}$, then calculates the bootstrap replicate of the indirect effect $\hat{ab}^{(b)} = \hat{a}^{(b)}*\hat{b}^{(b)}$. After obtaining $B$ such replicates, CausalEdge constructs the 95% condidence interval using the percentle method. Mediation is considered statistically significant if this confidence interval does not contain zero, ensuring hat we have strong evidence for an indirect effect before using it as grounds to remove an edge from the network. 
+
+The bootstrap distribution also provides valuable information about the magnitude and variability of mediation effects. A narrow confidence interval indicates that the proportion mediated is precisely estimated, while a wide interval suggests greater uncertainty. This information can inform decisions about edge pruning: edges with highly significant mediation (narrow CI far from zero) can be removed with confidence, while edges with marginally significant mediation warrant more careful consideration.
+
+#### 2.1.5 Edge Pruning Criterion
+The final decision about whether to remove an edge from the network integrates the statistical evidence from mediation analysis with user-specified thresholds that reflect the application's stringency requirements. An edge A→C is marked for removal if three conditions are jointly satisfied:
+- First, there exists at least one potential mediator B such that both A→B and B→C are present in the network after Granger causality testing and FDR correction. This ensures that we only consider mediation through proteins that themselves have established temporal relationships with both the cause and effect.
+- Second, the indirect effect through B must be statistically significant, as determined by the bootstrap confidence interval not containing zero. This requirement prevents removal of edges based on mediation estimates that could plausibly be zero due to sampling variability.
+- Third, the proportion of the total effect that is mediated must exceed a user-specified threshold $p>θ$, where $θ∈[0,1]$. The default value of $θ$ is 0.5, which means that edges are removed only if more than half of their effect operates indirectly through a mediator. This threshold provides a balance between network pruning and retention of partially mediated relationships that may reflect parallel direct and indirect mechanisms. Users can adjust this threshold based on their application: conservative analyses aiming to retain most edges might use $θ=0.7$ or higher, while aggressive pruning for hub identification might employ $θ=0.3$ or lower.
+
+This multi-stage criterion ensures that edges are only removed when there is strong statistical evidence for substantial mediation, preventing over-pruning while still effectively identifying and removing spurious indirect relationships. The result is a cleaner network that more accurately represents direct regulatory mechanisms.
+
+### 2.2 Algorithmic Pipeline
+The complete CausalEdge framework translates the mathematical principles described above into a practical computational pipeline consisting of five stages. Each stage builds on the previous one, progressively refining the network from initial correlation-based filtering through final mediation-pruned output.
+
+#### Stage 1: Data Preprocessing and Correlation Filtering
+The pipeline begins with a time-series proteomics data matrix $X∈R^{TxP}$ where $T$ is the number of time points and $P$ is the number of proteins. Real proteomics data typically contain missing values due to detection limits, sample preparation variability, or stochastic sampling in mass spectrometry. To handle these, CausalEdge first removes proteins with more than 50% missing observations, as these provide insufficient information for reliable time-series modeling. For the remaining proteins, CausalEdge imputes missing values using linear interpolation, which assumes that protein abundance changes smoothly between observed time points—a reasonable approximation for most biological processes measured at appropriate temporal resolution. 
+
+With a complete data matrix in hand, the next step is to identify candidate protein pairs that warrant detailed causality testing. Testing all $P(P-1)$ possible directed pairs would be computationally expensive and unecessary as many protein pairs show no co-variation and are unlikely to have causal relationships. To reduce this burden, CausalEdge calculates pairwise Pearson correlations $r_{ij} = cor(x_i,x_j)$ for all protein pairs and selects only those with absolute correlation above a pre-defined threshold (default = 0.75). 
+
+This correlation-based filtering dramatically reduces the number of candidate pairs while retaining those most likely to have genuine regulatory relationships. It is important to emphasize that high correlation does not imply causation; it serves purely as a pre-filter to focus computational effort on promising candidates. The subsequent Granger causality tests will determine directionality and temporal precedence, distinguishing regulatory relationships from co-variation.
+
+#### Stage 2: Granger Causality Testing with FDR Correction
+For each candidate pair $(i,j)$ identified in Stage 1, CausalEdge performs Granger causality testing as described in Section 2.1.1. This involves fitting autoregressive models with and without the potential cause's history, computing an F-statistic that quantifies the improvement in prediction, and calculating the associated p-value. Multiple lag orders are tested and the optimal lag order, that yields the highest F-statistic, is recorded. This optimal lag represents the timescale at which protein $i$'s influence on protein $j$ is strongest, providing information about the dynamics of the regulatory relationship.
+
+CausalEdge also records the sig of the correlation between the protein pair, which is later used to annotate edges as activating (positive sign) or inhibitory (negative sign). While Granger causality itself is agnostic about the sign of the effect, the correlation sign provides a simple heuristic for distinguishing these regulatory modes in most cases.
+
+After testing all candidate pairs, CausalEdge applys  Benjamini-Hochberg FDR correction at level α (typically 0.05) as described in Section 2.1.2. his adjusts the p-values to control the expected proportion of false positives among all discoveries. Only protein pairs with FDR-adjusted p-values below α are retained for network construction. This filtering step greatly reduces the number of edges compared to using uncorrected p-values, substantially improving the specificity of the inferred network while maintaining reasonable sensitivity to true relationships.
+
+#### Stage 3: Network Construction
