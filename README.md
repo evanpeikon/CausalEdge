@@ -2,6 +2,9 @@
 
 ## 🧬 Abstract 
 Network inference from time-series proteomics data remains a challenge in systems biology, with most approaches unable to distinguish direct regulatory relationships from indirect associations mediated by intermediate proteins. CausalEdge addresses this challenge by combining Granger Causality testing with bootstrapped mediation analysis to construct directed causal networks representing direct regulatory relationships. This model operates though a four-stage pipeline: 
+
+<img width="918" height="330" alt="Screenshot 2025-11-14 at 9 29 26 AM" src="https://github.com/user-attachments/assets/9660e298-7d6c-46bc-b7c4-ce1d46eea843" />
+
 - First, CausalEdge performs initial filtering to find protein pairs that vary together, which narrows down candidate pairs for testing.
 - Second, it performs Granger Causality tests for each candidate pair to determine if past values of Protein $A$ help predict future values of Protein $B$ better than Protein $B$'s history alone, establishing temporal precedence with false discovery rate correction.
 - Third, it builds a directed network graph where proteins are represented as nodes and directed edges represent causal relationships, with edges indicating where protein A positively or negatively causally influences changes in protein $B$.
