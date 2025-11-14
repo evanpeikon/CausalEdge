@@ -59,6 +59,29 @@ $F = \frac{(RSS_r-RSS_u)/p}{RSS_u/(T-2p-1)}$
 
 where $RSS_r$ and $RSS_u$ are the residual sums of squares for the restricted and unrestricted models, respectively. Under the null hypothesis, this statistic follows an F-distribution with degrees of freedom $(p,T-2p-1)$. A large F-statistic indicates that including $x$'s history substantially improves the prediction of $y$, suggesting a causal relationship. 
 
+The Granger causality test is implemented in the ```check_granger_causality()``` function:
+```python
+def check_granger_causality(x, y, max_lag=2, f_stat_threshold=10, p_value_threshold=0.05):
+    """Test if x Granger-causes y."""
+    try:
+        xy_data = np.column_stack([y, x]) # stack arrays for bivariate analysis
+        mask = ~np.isnan(xy_data).any(axis=1) # remove rows with nan
+        xy_data = xy_data[mask]        
+        test_result = grangercausalitytests(xy_data, maxlag=max_lag, verbose=False) # run GC across multiple lags
+        f_stats = [test_result[lag][0]['ssr_ftest'][0] for lag in range(1, max_lag + 1)] # extract f-stat for each lag
+        p_values = [test_result[lag][0]['ssr_ftest'][1] for lag in range(1, max_lag + 1)] # extract p-val for each lag
+        
+        # select the lag w/ the highest f-stat (strongest effect)
+        max_f_index = np.argmax(f_stats)
+        best_f = f_stats[max_f_index]
+        best_p = p_values[max_f_index]
+        best_lag = max_f_index + 1
+        is_causal = (best_f > f_stat_threshold) and (best_p < p_value_threshold)
+        return is_causal, best_f, best_p, best_lag
+    except Exception:
+        return False, 0, 1, 0
+```
+
 The choice of lag order $p$ is critical, as it determines how far back in time we look for predictive relationships. Too small a lag may miss regulatory effects that operate over longer timescales, while too large a lag reduces statistical power and may introduce spurious relationships. In practice, CausalEdge tests multiple lags $p[1,2,...,p_{max}]$ and selects the optimal lag, $p^*$, which is the one that yields the highest F-statistic, represetning the timescale at which the regulatory effect is strongest. This data-driven approach allows the temporal dynamics of each protein pair to emerge from the data rather than being imposed a priori.
 
 Finally, we declare that protein X Granger-causes protein Y if the F-statistic exceeds a threshold and the associated p-value is below a significance level after correction for multiple testing (described in Section 2.1.2), establishing both temporal precedence (X's past predicts Y's future) and predictive power (the prediction is statistically significant), providing a foundation for inferring directional regulatory relationships.
@@ -72,6 +95,23 @@ Given $N$ candidate protein pairs tested for Granger causality, we obtain p-valu
 - First, sort the p-values in ascending order $p_{(1)}≤p_{(2)}≤...≤p_{(n)}$.
 - Second, find the largest index $k$ such thagt $p_{(k)} ≤\frac{k}{N}*α$, where $α$ is the desired FDR level (0.05 by default).
 - Third, reject all null hypotheses corresponding to tests $1,2,...k$, ensuring that the  expected proportion of false positives among all rejected hypotheses is at most $α$, providing formal control over the false discovery rate while maintaining reasonable power to detect true relationships.
+
+FDR correction is applied using the ```multipletests()``` function from statsmodels after collecting all Granger causality test results:
+```python
+p_values = [r['p_value'] for r in test_results] # collect p-vals after performing all GC tests
+reject, p_adjusted, _, _ = multipletests(p_values, alpha=p_value_threshold, method=fdr_method) # perform FDR correction using BH  method
+
+# add corrected p-val to results
+for i, result in enumerate(test_results):
+    result['p_adjusted'] = p_adjusted[i]
+    result['significant'] = reject[i]
+
+# add only significant edges to graph
+for result in test_results:
+    if result['significant']:
+        G.add_edge(result['cause'], result['effect'], weight=abs(result['correlation']),
+            f_stat=result['f_stat'], p_value=result['p_value'], p_adjusted=result['p_adjusted'], lag=result['lag'])
+```
 
 The importance of this correction cannot be overstated. In preliminary analyses without FDR correction, networks inferred from time-series proteomics data contained 2-10x as many edges as networks inferred with proper correction, with the additional edges showing substantially weaker effect sizes and less biological coherence. By applying FDR correction, we ensure that the networks entering the mediation analysis stage represent genuine temporal relationships rather than statistical noise.
 
@@ -99,12 +139,95 @@ The third model estimates the total effect (c-path) by regressing C on A alone:
 
 $C_t = θ_0 \sum_{i=1}^p θ_iC_{t-i} + \sum_{i=1}^p c_iA_{t-i} +  ϵ_{t}^{(3)}$
 
-Each path is then estiamted as the mean effect across lags $a=\frac{1}{p}\sigma_{i=1}^p a_i$, $b=\frac{1}{p}\sigma_{i=1}^p b_i$, and similarly for $c$ and $c^{'}$.  This averaging accounts for the fact that regulatory effects may be distributed across multiple time lags rather than concentrated at a single lag. The key quantity for determining whether an edge should be pruned is the indirect effect $ab$. However, because this is a product of two estimated coefficients, its sampling distribution is complex and typically non-normal, making standard error propagation unreliable. To obtain valid statistical inference, CasualEdge utilizes bootstrapping. 
+Each path is then estiamted as the mean effect across lags $a=\frac{1}{p}\sigma_{i=1}^p a_i$, $b=\frac{1}{p}\sigma_{i=1}^p b_i$, and similarly for $c$ and $c^{'}$.  This averaging accounts for the fact that regulatory effects may be distributed across multiple time lags rather than concentrated at a single lag. 
+
+Mediation analysis is implemented in the ```bootstrap_mediation_analysis()``` function, which fits three OLS regression models to estimate the a-path, b-path, and total effect:
+```python
+def bootstrap_mediation_analysis(x, y, z, max_lag=2, n_bootstrap=1000, confidence_level=0.95):
+    """Perform bootstrapped mediation analysis to quantify indirect effects"""
+    # Create lagged variables
+    y_current = y_vals[max_lag:]
+    x_lagged = []
+    z_lagged = []
+    y_lagged = []
+    
+    for lag in range(1, max_lag + 1):
+        x_lagged.append(x_vals[max_lag - lag:n - lag])
+        z_lagged.append(z_vals[max_lag - lag:n - lag])
+        y_lagged.append(y_vals[max_lag - lag:n - lag])
+    
+    # Path a: X → M (effect of X on mediator Z)
+    X_x = sm.add_constant(np.column_stack(x_lagged + y_lagged))
+    model_a = OLS(z_vals[max_lag:], X_x).fit()
+    a_coef = np.mean(model_a.params[1:max_lag+1])
+    
+    # Path b: M → Y (effect of mediator Z on Y, controlling for X)
+    X_xz = sm.add_constant(np.column_stack(x_lagged + z_lagged + y_lagged))
+    model_b = OLS(y_current, X_xz).fit()
+    b_coef = np.mean(model_b.params[max_lag+1:2*max_lag+1])
+    
+    # Path c: X → Y (total effect)
+    X_total = sm.add_constant(np.column_stack(x_lagged + y_lagged))
+    model_c = OLS(y_current, X_total).fit()
+    c_coef = np.mean(model_c.params[1:max_lag+1])
+    
+    # Path c': X → Y controlling for M (direct effect)
+    c_prime_coef = np.mean(model_b.params[1:max_lag+1])
+    
+    # Mediation effects
+    indirect_effect = a_coef * b_coef
+    direct_effect = c_prime_coef
+    total_effect = c_coef
+```
+
+The key quantity for determining whether an edge should be pruned is the indirect effect $ab$. However, because this is a product of two estimated coefficients, its sampling distribution is complex and typically non-normal, making standard error propagation unreliable. To obtain valid statistical inference, CasualEdge utilizes bootstrapping. 
 
 #### 2.1.4 Bootstrap Confidence Intervals
 Bootstrapping provides a nonparametric approach to quantifying uncertainty in complex statistics like the indirect effect [22,23]. The basic idea is to resample the data many times, recompute the statistic of interest for each resample, and use the resulting distribution to construct confidence intervals. For mediation analysis, this approach has been shown to provide better coverage properties than normal-theory methods, particularly for the indirect effect which follows a skewed distribution [23].
 
 For each mediation test, the bootstrap procedure proceeds as follows. First, the time-series is sampled with replacement $B$ times (default $B$=1000), preserving the temporal structure by sampling entire time points together. For each bootstrap sample $b=1,2,...,B,$ CausalEdge fits Models 1 and 2 from Section 2.1.3 to obtain estimates $\hat{a}^{(b)}$ and  $\hat{b}^{(b)}$, then calculates the bootstrap replicate of the indirect effect $\hat{ab}^{(b)} = \hat{a}^{(b)}*\hat{b}^{(b)}$. After obtaining $B$ such replicates, CausalEdge constructs the 95% condidence interval using the percentle method. Mediation is considered statistically significant if this confidence interval does not contain zero, ensuring hat we have strong evidence for an indirect effect before using it as grounds to remove an edge from the network. 
+
+Bootstrap confidence intervals are computed within the ```bootstrap_mediation_analysis()``` function by resampling the data 1000 times:
+```python
+# bootstrap confidence intervals for indirect effect
+bootstrap_indirect = []
+
+for _ in range(n_bootstrap):
+    indices = np.random.choice(len(y_current), size=len(y_current), replace=True) # resample w/ replacement (preserves temporal structure)
+    
+    # resample all data
+    y_boot = y_vals[indices]
+    x_boot = x_vals[indices]
+    z_boot = z_vals[indices]
+    
+    # recreate lagged variables for bootstrap sample
+    # note: [lagged variable creation code omitted for brevity]
+    
+    # fit models on bootstrap sample
+    model_a_boot = OLS(z_boot[max_lag:], X_x_boot).fit()
+    a_boot = np.mean(model_a_boot.params[1:max_lag+1])
+    model_b_boot = OLS(y_curr_boot, X_xz_boot).fit()
+    b_boot = np.mean(model_b_boot.params[max_lag+1:2*max_lag+1])
+    
+    # stores indirect effect for  bootstrap sample
+    bootstrap_indirect.append(a_boot * b_boot)
+
+bootstrap_indirect = np.array(bootstrap_indirect)
+
+# calculate 95% confidence intervals using percentile method
+alpha = 1 - confidence_level
+ci_lower = np.percentile(bootstrap_indirect, 100 * alpha / 2)
+ci_upper = np.percentile(bootstrap_indirect, 100 * (1 - alpha / 2))
+
+# mediation is significant if CI doesn't include 0
+is_significant = not (ci_lower <= 0 <= ci_upper)
+
+# calculate proportion mediated
+if abs(total_effect) > 1e-10:
+    proportion_mediated = abs(indirect_effect / total_effect)
+else:
+    proportion_mediated = 0
+```
 
 The bootstrap distribution also provides valuable information about the magnitude and variability of mediation effects. A narrow confidence interval indicates that the proportion mediated is precisely estimated, while a wide interval suggests greater uncertainty. This information can inform decisions about edge pruning: edges with highly significant mediation (narrow CI far from zero) can be removed with confidence, while edges with marginally significant mediation warrant more careful consideration.
 
@@ -114,6 +237,42 @@ The final decision about whether to remove an edge from the network integrates t
 - Second, the indirect effect through B must be statistically significant, as determined by the bootstrap confidence interval not containing zero. This requirement prevents removal of edges based on mediation estimates that could plausibly be zero due to sampling variability.
 - Third, the proportion of the total effect that is mediated must exceed a user-specified threshold $p>θ$, where $θ∈[0,1]$. The default value of $θ$ is 0.5, which means that edges are removed only if more than half of their effect operates indirectly through a mediator. This threshold provides a balance between network pruning and retention of partially mediated relationships that may reflect parallel direct and indirect mechanisms. Users can adjust this threshold based on their application: conservative analyses aiming to retain most edges might use $θ=0.7$ or higher, while aggressive pruning for hub identification might employ $θ=0.3$ or lower.
 
+The edge pruning logic is implemented in the ```detect_and_remove_mediated_edges()```function, which identifies potential mediators using network topology:
+```python
+def detect_and_remove_mediated_edges(G, data_transposed, max_lag=2, p_value_threshold=0.05,  mediation_threshold=0.5, n_bootstrap=1000):
+    """Detect mediated relationships using bootstrapped mediation analysis"""
+    edges_to_remove = []
+    
+    for cause, effect in G.edges():
+        mediators = set(G.successors(cause)) & set(G.predecessors(effect)) #  find potential mediators
+        if not mediators:
+            continue
+        # test ea/ potential mediator w/ bootstrapping
+        best_mediator = None
+        best_proportion = 0
+        best_result = None
+
+        for mediator in mediators:
+            result = bootstrap_mediation_analysis(data_dict[cause],data_dict[effect],
+                data_dict[mediator], max_lag=max_lag, n_bootstrap=n_bootstrap)
+            
+            # check if this mediator explains more than previous ones
+            if result and result['is_significant'] and result['proportion_mediated'] > best_proportion:
+                best_proportion = result['proportion_mediated']
+                best_mediator = mediator
+                best_result = result
+        
+        # remove edge if mediation threshold exceeded
+        if best_result and best_result['is_significant'] and best_proportion > mediation_threshold:
+            edges_to_remove.append((cause, effect))
+            mediation_info[(cause, effect)] = { 'is_mediated': True,'mediator': best_mediator, 'proportion_mediated': best_proportion,
+            'indirect_effect': best_result['indirect_effect'], 'ci_lower': best_result['ci_lower'], 'ci_upper': best_result['ci_upper']}
+    
+    # remove mediated edges from graph
+    G.remove_edges_from(edges_to_remove)
+    return G, mediation_info
+```
+
 This multi-stage criterion ensures that edges are only removed when there is strong statistical evidence for substantial mediation, preventing over-pruning while still effectively identifying and removing spurious indirect relationships. The result is a cleaner network that more accurately represents direct regulatory mechanisms.
 
 ### 2.2 Algorithmic Pipeline
@@ -122,12 +281,57 @@ The complete CausalEdge framework translates the mathematical principles describ
 #### Stage 1: Data Preprocessing and Correlation Filtering
 The pipeline begins with a time-series proteomics data matrix $X∈R^{TxP}$ where $T$ is the number of time points and $P$ is the number of proteins. Real proteomics data typically contain missing values due to detection limits, sample preparation variability, or stochastic sampling in mass spectrometry. To handle these, CausalEdge first removes proteins with more than 50% missing observations, as these provide insufficient information for reliable time-series modeling. For the remaining proteins, CausalEdge imputes missing values using linear interpolation, which assumes that protein abundance changes smoothly between observed time points—a reasonable approximation for most biological processes measured at appropriate temporal resolution. 
 
+Data preprocessing and missing value handling are implemented in the main ```CausalEdge()``` function:
+```python
+data_transposed = data.set_index(id_column).T # transpose data so rows are time points and columns are proteins (note: can comment out)
+
+# handle missing values
+missing_pct = data_transposed.isnull().mean()
+biomarkers_to_keep = missing_pct[missing_pct < 0.5].index
+data_transposed = data_transposed[biomarkers_to_keep]
+
+# interpolate remaining missing values
+data_transposed = data_transposed.interpolate(method='linear', axis=0, limit_direction='both')
+```
+
 With a complete data matrix in hand, the next step is to identify candidate protein pairs that warrant detailed causality testing. Testing all $P(P-1)$ possible directed pairs would be computationally expensive and unecessary as many protein pairs show no co-variation and are unlikely to have causal relationships. To reduce this burden, CausalEdge calculates pairwise Pearson correlations $r_{ij} = cor(x_i,x_j)$ for all protein pairs and selects only those with absolute correlation above a pre-defined threshold (default = 0.75). 
+
+Correlation-based filtering efficiently reduces the candidate pair space using NumPy operations:
+```python
+corr_array = np.corrcoef(data_array.T) # calculate correlation matrix
+
+# pre filter pairs by correlation threshold
+candidate_pairs = []
+abs_corr = np.abs(corr_array)
+high_corr_mask = abs_corr >= corr_threshold
+
+# exclude self-correlations
+for i in range(n_biomarkers):
+    high_corr_mask[i, i] = False
+
+# extract high correlation pairs
+i_indices, j_indices = np.where(high_corr_mask)
+
+for idx in range(len(i_indices)):
+    i, j = i_indices[idx], j_indices[idx]
+    candidate_pairs.append((i, j, corr_array[i, j]))
+```
 
 This correlation-based filtering dramatically reduces the number of candidate pairs while retaining those most likely to have genuine regulatory relationships. It is important to emphasize that high correlation does not imply causation; it serves purely as a pre-filter to focus computational effort on promising candidates. The subsequent Granger causality tests will determine directionality and temporal precedence, distinguishing regulatory relationships from co-variation.
 
 #### Stage 2: Granger Causality Testing with FDR Correction
 For each candidate pair $(i,j)$ identified in Stage 1, CausalEdge performs Granger causality testing as described in Section 2.1.1. This involves fitting autoregressive models with and without the potential cause's history, computing an F-statistic that quantifies the improvement in prediction, and calculating the associated p-value. Multiple lag orders are tested and the optimal lag order, that yields the highest F-statistic, is recorded. This optimal lag represents the timescale at which protein $i$'s influence on protein $j$ is strongest, providing information about the dynamics of the regulatory relationship.
+
+For efficiency, protein data arrays are pre-extracted before iterating through candidate pairs:
+```python
+data_arrays = {i: data_transposed.iloc[:, i].values for i in range(n_biomarkers)} # pre-extract data arrays to avoid repeated DataFrame indexing
+
+# test ea/ candidate pair using the check_granger_causality() function (see Section 2.1.1)
+for test_idx, (i, j, corr_value) in enumerate(candidate_pairs):
+    is_causal, f_stat, p_value, lag = check_granger_causality(
+        data_arrays[i], data_arrays[j], max_lag=max_lag)
+    # store results for subsequent FDR correction
+```
 
 CausalEdge also records the sig of the correlation between the protein pair, which is later used to annotate edges as activating (positive sign) or inhibitory (negative sign). While Granger causality itself is agnostic about the sign of the effect, the correlation sign provides a simple heuristic for distinguishing these regulatory modes in most cases.
 
@@ -138,6 +342,29 @@ After compiling a filtered set of Granger-causal relationships, CausalEdge const
 
 Each edge is annotated with attributes that capture important aspects of the relationship. The weight is set to $|r_{ij}|$, the absolute correlation strength, indicating whether the relationship is positive (both proteins increase/decrease together, suggesting activation) or negative (proteins move in opposite directions, suggesting inhibition). The lag is $p_{ij}^{*}$, the optimal temporal lag at which the causal effect is strongest. Finally, CausalEdge stores the statistical test results, including the F-statistic, the original p-value, and the FDR-adjusted p-value, enabling downstream assessment of relationship strength and statistical confidence.
 
+Network construction uses NetworkX to create a directed graph with rich edge annotations:
+```python
+# initialize directed graph
+G = nx.DiGraph()
+G.add_nodes_from(biomarker_list)
+
+# after FDR correction, add only significant edges
+for result in test_results:
+    if result['significant']:  # Based on FDR-adjusted p-value
+        G.add_edge(result['cause'], result['effect'],  weight=abs(result['correlation']), correlation=float(result['correlation']),
+            color='red' if result['correlation'] < 0 else 'blue',  # Red=inhibitory, Blue=activating f_stat=result['f_stat'],
+            p_value=result['p_value'], p_adjusted=result['p_adjusted'], lag=result['lag'])
+
+# remove isolated nodes (no edges)
+nodes_with_edges = set()
+for u, v in G.edges():
+    nodes_with_edges.add(u)
+    nodes_with_edges.add(v)
+
+nodes_to_remove = set(G.nodes()) - nodes_with_edges
+G.remove_nodes_from(nodes_to_remove)
+```
+
 At this stage, the network represents all significant temporal predictive relationships, but it still contains indirect edges where protein A influences protein C only through intermediate protein B. The next stage addresses this problem through systematic mediation testing.
 
 #### Stage 4: Mediation Analysis and Edge Pruning
@@ -147,13 +374,75 @@ For each potential mediator $j∈M_{ik}$, CausalEdge performs bootstrapped media
 
 If any mediator $j$ satisfies he pruning criteria specified in Section 2.1.5 (significant indirect effect and proportion mediated exceeding threshold θ), CausalEdge marks the edge $(i,k)$ for removal and records hte mediation statistics for downstream analysis and interpretation. This procedure is repeated for all edges in the network. Importantly, CausalEdge using an "any mediator" criterion, meaning that if any single mediator explains a sufficient proportion of the relationship, the edge is removed. 
 
+The entire mediation testing and pruning workflow is encapsulated in a single function call (full implementation shown in Section 2.1.5):
+```python
+# perform mediation analysis if requested
+if remove_mediated and G.number_of_edges() > 0:
+    G, mediation_info = detect_and_remove_mediated_edges( G, data_transposed,  max_lag=max_lag, 
+        p_value_threshold=p_value_threshold, mediation_threshold=mediation_threshold,  # Default 0.5 n_bootstrap=n_bootstrap) 
+```
+
 After testing all edges, those marked for mediation are removed, resulting in the pruned network $G^{'}=(V^{'},E^{'})$. Finally, CausalEdge remoives isolated nodes, which represents proteins that no longer have any incoming or outgoing edges after pruning as these provide no information about regulatory relationships. The result is a final network $G^{'}$ that represents direct regulatory relationships with high statistical confidence.
 
 #### Stage 5: Network Analysis
-After obtaining a pruned network, CausalEdge computes standard network metrics that characterize its structure and identifies biologically important proteins. Additionally, strongly connected components (subgraphs where every node can reach every other node) are identified, which may represent tightly coupled regulatory modules and path analysis is performed to trace  regulatory cascades between proteins of interest, providing systems-level insights that complement the individual edge-level information captured during network inference. 
+After obtaining a pruned network, CausalEdge computes standard network metrics that characterize its structure and identifies biologically important proteins.  The pipeline automatically calculates and reports key network statistics:
+```python
+# calculate in and out degree
+out_degree = dict(G.out_degree())
+in_degree = dict(G.in_degree())
+
+print("\nTop 5 proteins by out-degree (causes many others):")
+sorted_out = sorted(out_degree.items(), key=lambda x: x[1], reverse=True)
+for node, degree in sorted_out[:5]:
+    if degree > 0:
+        print(f"  {node}: {degree} outgoing edges")
+
+print("\nTop 5 proteins by in-degree (influenced by many others):")
+sorted_in = sorted(in_degree.items(), key=lambda x: x[1], reverse=True)
+for node, degree in sorted_in[:5]:
+    if degree > 0:
+        print(f"  {node}: {degree} incoming edges")
+
+# identify strongest causal relationships
+edges_list = [(u, v, data['f_stat'], data['correlation'],  data['p_value'], data.get('p_adjusted', data['p_value']), data['lag']) for u, v, data in G.edges(data=True)]
+edges_list.sort(key=lambda x: x[2], reverse=True)
+
+print("\nTop 10 strongest causal relationships:")
+for u, v, f_stat, corr, p_val, p_adj, lag in edges_list[:min(10, len(edges_list))]:
+    direction = "→" if corr > 0 else "⊣"
+    print(f"  {u} {direction} {v}: F={f_stat:.2f}, p_adj={p_adj:.5f}, lag={lag}")
+```
+
+Additionally, strongly connected components (subgraphs where every node can reach every other node) are identified, which may represent tightly coupled regulatory modules and path analysis is performed to trace regulatory cascades between proteins of interest, providing systems-level insights that complement the individual edge-level information captured during network inference.
 
 ### 2.3 Implementation Details 
 CausalEdge is implemented in Python 3.8+ using widely-adopted scientific computing libraries. Data manipulation relies on ```numpy``` for efficient array operations and ```pandas``` for structured data handling. Statistical modeling employs ```statsmodels``` for Granger causality testing and regression models, with ```scipy``` providing additional statistical functions including bootstrap sampling and percentile calculations. Graph construction and analysis utilize ```networkx```, a library offering comprehensive network algorithms and visualization capabilities.
+
+The implementation uses the following core libraries imported at the top of the script:
+```python
+import pandas as pd
+import numpy as np
+import networkx as nx
+from statsmodels.tsa.stattools import grangercausalitytests
+import statsmodels.api as sm
+from statsmodels.regression.linear_model import OLS
+from statsmodels.stats.multitest import multipletests
+```
+Additionally, the main analysis function provides a user-friendly interface with preset default parameters:
+```python
+G, causal_df, data_transposed, mediation_info, test_results = CausalEdge(
+    data=data,
+    id_column='Protein.Names',
+    corr_threshold=0.75,           # Correlation pre-filter
+    f_stat_threshold=10,           # F-statistic threshold
+    p_value_threshold=0.05,        # FDR significance level
+    max_lag=2,                     # Maximum temporal lag to test
+    remove_mediated=True,          # Enable mediation pruning
+    mediation_threshold=0.5,       # Remove if >50% mediated
+    n_bootstrap=1000,              # Bootstrap samples for CI
+    fdr_method='fdr_bh'            # Benjamini-Hochberg FDR
+)
+```
 
 ## 🧬 Discussion
 ### 3.1 Advantages of the CausalEdge Framework
